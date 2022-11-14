@@ -1,0 +1,226 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Plantilla para AWS UG Medellin - Noviembre 2022"
+
+Parameters:
+    CertificateARN:
+        Type: String
+
+Resources:
+
+    Sensor1:
+        Type: "AWS::IoT::Thing"
+        Properties: 
+            ThingName: "Sensor1"
+            
+    AttachCertSensor1:
+        Type: "AWS::IoT::ThingPrincipalAttachment"
+        Properties:
+          ThingName:
+            !Ref Sensor1
+          Principal: !Ref CertificateARN
+          
+    Sensor2:
+        Type: "AWS::IoT::Thing"
+        Properties: 
+            ThingName: "Sensor2"
+            
+    AttachCertSensor2:
+        Type: "AWS::IoT::ThingPrincipalAttachment"
+        Properties:
+          ThingName:
+            !Ref Sensor2
+          Principal: !Ref CertificateARN
+          
+    KinesisDataStream: 
+        Type: "AWS::Kinesis::Stream"
+        Properties: 
+            Name: "streamlab" 
+            RetentionPeriodHours: 24 
+            StreamModeDetails: 
+                StreamMode: "ON_DEMAND"
+          
+    IoTPolicy:
+        Type: "AWS::IoT::Policy"
+        Properties:
+            PolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                  - Effect: "Allow"
+                    Action:
+                      - "iot:*"
+                    Resource:
+                      - "*"    
+                    #   - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:thing/${Sensor1}'
+                    #   - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:thing/${Sensor2}'
+            PolicyName: "PolicyIoT"
+            
+    AttachPolicyCert:
+        Type: "AWS::IoT::PolicyPrincipalAttachment"
+        Properties:
+            PolicyName: !Ref IoTPolicy
+            Principal: !Ref CertificateARN
+
+    IoTTopicRule:            
+        Type: "AWS::IoT::TopicRule"
+        Properties: 
+            RuleName: 'RuleSendIoTKinesis'
+            TopicRulePayload: 
+                Actions:
+                  - Kinesis:
+                        PartitionKey: '${newuuid()}'
+                        RoleArn: !GetAtt RoleIoTKinesis.Arn
+                        StreamName: !Ref KinesisDataStream
+                AwsIotSqlVersion: "2016-03-23"
+                Description: 'Regla para envío de datos de IoT a Kinesis'
+                Sql: "SELECT * FROM 'iot-device/#'"
+          
+    RoleRedshift:
+        Type: "AWS::IAM::Role"
+        Properties:
+            RoleName: "RedshiftRoleLab"
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    - Effect: "Allow"
+                      Action:
+                          - 'sts:AssumeRole'
+                      Principal:
+                        Service:
+                            - "redshift.amazonaws.com"
+            ManagedPolicyArns:
+                - "arn:aws:iam::aws:policy/AmazonRedshiftAllCommandsFullAccess"
+
+    RoleIoTKinesis:
+        Type: "AWS::IAM::Role"
+        Properties:
+            RoleName: "IoTKinesisRoleLab"
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                  - Effect: "Allow"
+                    Action:
+                      - 'sts:AssumeRole'
+                    Principal:
+                      Service:
+                        - "iot.amazonaws.com"
+            Policies:
+                - PolicyName: "KinesisAccess"
+                  PolicyDocument:
+                    Version: "2012-10-17"
+                    Statement:
+                      - Sid: "KinesisPutRecord"
+                        Effect: "Allow"
+                        Action: "kinesis:PutRecord"
+                        Resource: !GetAtt KinesisDataStream.Arn
+                    
+    RoleRedshiftKinesis:
+        Type: "AWS::IAM::Role"
+        Properties:
+            RoleName: "RedshiftKinesisRoleLab"
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                  - Effect: "Allow"
+                    Action:
+                      - 'sts:AssumeRole'
+                    Principal:
+                      Service:
+                        - "redshift.amazonaws.com"
+            Policies:
+                - PolicyName: "KinesisAccess"
+                  PolicyDocument:
+                    Version: "2012-10-17"
+                    Statement:
+                      - Sid: "ReadStream"
+                        Effect: "Allow"
+                        Action: 
+                          - "kinesis:DescribeStreamSummary"
+                          - "kinesis:GetShardIterator"
+                          - "kinesis:GetRecords"
+                          - "kinesis:DescribeStream"
+                        Resource: '*'
+                      - Sid: "ListStream"
+                        Effect: "Allow"
+                        Action: 
+                          - "kinesis:ListStreams"
+                          - "kinesis:ListShards"
+                        Resource: '*'
+
+    VPC:
+        Type: "AWS::EC2::VPC"
+        Properties:
+            CidrBlock: "10.0.0.0/16"
+            Tags:
+                - Key: "Name"
+                  Value: "vpc-lab-redshift"
+                  
+    # You need at least 37 free IP addresses in 3 subnets. Each subnet should be in a different Availability Zone.              
+    Subnet1:
+        Type: "AWS::EC2::Subnet"
+        Properties:
+            CidrBlock: "10.0.0.0/24"
+            AvailabilityZone: "us-east-1a"
+            VpcId: !Ref VPC
+            Tags:
+                - Key: "Name"
+                  Value: "subnet1-lab-redshift"
+    Subnet2:
+        Type: "AWS::EC2::Subnet"
+        Properties:
+            CidrBlock: "10.0.1.0/24"
+            AvailabilityZone: "us-east-1b"
+            VpcId: !Ref VPC
+            Tags:
+                - Key: "Name"
+                  Value: "subnet2-lab-redshift"
+    Subnet3:
+        Type: "AWS::EC2::Subnet"
+        Properties:
+            CidrBlock: "10.0.2.0/24"
+            AvailabilityZone: "us-east-1c"
+            VpcId: !Ref VPC
+            Tags:
+                - Key: "Name"
+                  Value: "subnet3-lab-redshift"
+
+    SecurityGroupRedshift:            
+        Type: "AWS::EC2::SecurityGroup"
+        Properties: 
+            GroupDescription: "Grupo de seguridad para redshift"
+            GroupName: "Redshift-SG"
+            VpcId: !Ref VPC
+            Tags:
+                - Key: "Name"
+                  Value: "redshift-sg"
+            SecurityGroupIngress:
+              - IpProtocol: "tcp"
+                FromPort: 22
+                ToPort: 22
+                CidrIp: "10.0.0.0/24"
+                Description: "Premite ingreso"
+
+    RedshiftNamespace:                
+        Type: "AWS::RedshiftServerless::Namespace"
+        Properties:
+            IamRoles: 
+              - !GetAtt RoleRedshift.Arn
+              - !GetAtt RoleRedshiftKinesis.Arn
+            NamespaceName: "namespace-lab"
+    
+    RedshiftWorkgroup:
+        Type: "AWS::RedshiftServerless::Workgroup"
+        Properties: 
+            BaseCapacity: 32
+            NamespaceName: !Ref RedshiftNamespace
+            SecurityGroupIds: 
+              - !Ref SecurityGroupRedshift
+            SubnetIds: 
+              - !Ref Subnet1
+              - !Ref Subnet2
+              - !Ref Subnet3
+            WorkgroupName: "workgroup-lab"
+                
+Outputs:
+  RoleRedshiftKinesisARN:
+    Description: "Role IAM para acceso a Kinesis desde Redshift "
+    Value: !GetAtt RoleRedshiftKinesis.Arn
